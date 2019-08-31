@@ -130,6 +130,32 @@ func TestCreateObject(t *testing.T) {
 	}
 }
 
+func TestCopyObject(t *testing.T) {
+	ts := newTestServer(t)
+	defer ts.Close()
+	svc := ts.s3Client()
+
+	ts.backendPutString(defaultBucket, "first", nil, "content")
+
+	src := fmt.Sprintf("%s/first", defaultBucket)
+	_, err := svc.CopyObject(&s3.CopyObjectInput{
+		CopySource: &src,
+		Bucket: aws.String(defaultBucket),
+		Key:    aws.String("second"),
+	})
+	ts.OK(err)
+
+	// TODO: why is CopyObjectResult not set?
+	//if *out.CopyObjectResult.ETag != `"f75b8179e4bbe7e2b4a074dcef62de95"` { // md5("content")
+	//	ts.Fatal("bad etag", *out.CopyObjectResult.ETag)
+	//}
+
+	obj := ts.backendGetString(defaultBucket, "second", nil)
+	if obj != "content" {
+		t.Fatal("object creation failed")
+	}
+}
+
 func TestCreateObjectMetadataSizeLimit(t *testing.T) {
 	ts := newTestServer(t, withFakerOptions(
 		gofakes3.WithMetadataSizeLimit(1),

@@ -520,22 +520,13 @@ func (g *GoFakeS3) createObjectBrowserUpload(bucket string, w http.ResponseWrite
 	return nil
 }
 
-// CreateObject creates a new S3 object.
+// CreateObject creates a new S3 object, or copies an existing object.
 func (g *GoFakeS3) createObject(bucket, object string, w http.ResponseWriter, r *http.Request) (err error) {
 	g.log.Print(LogInfo, "CREATE OBJECT:", bucket, object)
 
 	meta, err := metadataHeaders(r.Header, g.timeSource.Now(), g.metadataSizeLimit)
 	if err != nil {
 		return err
-	}
-
-	size, err := strconv.ParseInt(r.Header.Get("Content-Length"), 10, 64)
-	if err != nil || size <= 0 {
-		return ErrMissingContentLength
-	}
-
-	if len(object) > KeySizeLimit {
-		return ResourceError(ErrKeyTooLong, object)
 	}
 
 	var md5Base64 string
@@ -547,12 +538,45 @@ func (g *GoFakeS3) createObject(bucket, object string, w http.ResponseWriter, r 
 		}
 	}
 
-	// hashingReader is still needed to get the ETag even if integrityCheck
-	// is set to false:
-	rdr, err := newHashingReader(r.Body, md5Base64)
-	defer r.Body.Close()
-	if err != nil {
-		return err
+	var size int64
+	var rdr *hashingReader
+	cpySrc := r.Header.Get("x-amz-copy-source")
+	if cpySrc != "" {
+		parts := strings.Split(cpySrc, "/")
+		if len(parts) != 2 {
+			// TODO: what is the response for invalid headers?
+			return ErrInvalidArgument
+		}
+
+		obj, err := g.storage.GetObject(parts[0], parts[1], nil)
+		if err != nil {
+			return err
+		}
+		defer obj.Contents.Close()
+
+		size = obj.Size
+		rdr, err = newHashingReader(obj.Contents, md5Base64)
+		if err != nil {
+			return err
+		}
+	} else {
+		size, err = strconv.ParseInt(r.Header.Get("Content-Length"), 10, 64)
+
+		if err != nil || size <= 0 {
+			return ErrMissingContentLength
+		}
+
+		// hashingReader is still needed to get the ETag even if integrityCheck
+		// is set to false:
+		rdr, err = newHashingReader(r.Body, md5Base64)
+		defer r.Body.Close()
+		if err != nil {
+			return err
+		}
+	}
+
+	if len(object) > KeySizeLimit {
+		return ResourceError(ErrKeyTooLong, object)
 	}
 
 	result, err := g.storage.PutObject(bucket, object, meta, rdr, size)
